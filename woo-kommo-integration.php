@@ -4,7 +4,7 @@
  * Plugin URI: https://github.com/Wyllymk/woo-kommo-integration
  * Description: Integrate WordPress/WooCommerce site with Kommo CRM
  * Version: 1.0.0
- * Author: Wilson
+ * Author: Trading Tech Solutions
  * Author URI: #
  * Text Domain: woo-kommo
  * Requires PHP: 7.4
@@ -71,9 +71,6 @@ class WooKommoIntegration {
         // Initialize admin and API classes
         WooKommoAdmin::get_instance()->init();
         WooKommoAPI::get_instance()->init();
-
-        // Hook into WooCommerce order processing
-        add_action('woocommerce_checkout_order_processed', [$this, 'handle_new_order'], 10, 3);
     }
 
     /**
@@ -87,22 +84,6 @@ class WooKommoIntegration {
 <?php
     }
 
-    /**
-     * Handle new WooCommerce order
-     */
-    public function handle_new_order($order_id, $posted_data, $order) {
-        error_log('Kommo Integration: New order processed');
-        try {
-            // Initialize the API
-            $api = WooKommoAPI::get_instance();
-            $api->init();
-
-            // Create a new contact in Kommo from the order
-            $api->create_kommo_contact_from_order($order_id);
-        } catch (Exception $e) {
-            error_log('Kommo Integration Error: ' . $e->getMessage());
-        }
-    }
 }
 
 // Initialize the plugin

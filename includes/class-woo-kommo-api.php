@@ -66,6 +66,9 @@ class WooKommoAPI {
         $this->client = new \GuzzleHttp\Client();
 
         add_action('admin_init', [$this, 'get_access_token']);
+        add_action('woocommerce_created_customer', [$this, 'handle_new_customer']);
+        add_action('woocommerce_save_account_details', [$this, 'handle_customer_update']);
+        add_action('woocommerce_checkout_order_processed', [$this, 'handle_new_order'], 10, 3);
     }
 
     /**
@@ -336,6 +339,277 @@ class WooKommoAPI {
             return $response_data;
         } catch (Exception $e) {
             error_log('Kommo API Create Contact Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Handle new WooCommerce order
+     */
+    public function handle_new_order($order_id, $posted_data, $order) {
+        error_log('Kommo Integration: New order processed');
+        try {
+            // Initialize the API
+            $api = WooKommoAPI::get_instance();
+            $api->init();
+
+            // Create a new contact in Kommo from the order
+            $api->create_kommo_contact_from_order($order_id);
+        } catch (Exception $e) {
+            error_log('Kommo Integration Error: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Handle new customer account creation
+     */
+    public function handle_new_customer($customer_id) {
+        error_log('Kommo Integration: New customer account created');
+        try {
+            // Initialize the API
+            $api = WooKommoAPI::get_instance();
+            $api->init();
+
+            // Create or update a contact in Kommo from the customer data
+            $api->create_or_update_kommo_contact_from_customer($customer_id);
+        } catch (Exception $e) {
+            error_log('Kommo Integration Error: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Handle customer account update
+     */
+    public function handle_customer_update($customer_id) {
+        error_log('Kommo Integration: Customer account updated');
+        try {
+            // Initialize the API
+            $api = WooKommoAPI::get_instance();
+            $api->init();
+
+            // Create or update a contact in Kommo from the customer data
+            $api->create_or_update_kommo_contact_from_customer($customer_id);
+        } catch (Exception $e) {
+            error_log('Kommo Integration Error: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Check if a contact with the given email already exists in Kommo
+     */
+    private function get_contact_by_email($email) {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+
+            $response = $this->client->request('GET', $this->base_url . '/api/v4/contacts', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                ],
+                'query' => [
+                    'query' => $email,
+                ],
+            ]);
+
+            $contacts = json_decode($response->getBody(), true);
+            if (!empty($contacts['_embedded']['contacts'])) {
+                return $contacts['_embedded']['contacts'][0];
+            }
+            return null;
+        } catch (Exception $e) {
+            error_log('Kommo API Get Contact Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Create or update a contact in Kommo from a WooCommerce customer
+     */
+    public function create_or_update_kommo_contact_from_customer($customer_id) {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+
+            // Get the WooCommerce customer
+            $customer = new WC_Customer($customer_id);
+            if (!$customer) {
+                throw new Exception('Customer not found.');
+            }
+
+            // Extract customer details
+            $customer_name = $customer->get_first_name() . ' ' . $customer->get_last_name();
+            $customer_email = $customer->get_email();
+            $customer_phone = $customer->get_billing_phone();
+            $customer_address = $customer->get_billing_address_1();
+            $customer_city = $customer->get_billing_city();
+            $customer_country = $customer->get_billing_country();
+
+            // Check if a contact with the same email already exists
+            $existing_contact = $this->get_contact_by_email($customer_email);
+            if ($existing_contact) {
+                // Update the existing contact
+                return $this->update_kommo_contact_from_customer($customer_id);
+            } else {
+                // Create a new contact
+                return $this->create_kommo_contact_from_customer($customer_id);
+            }
+        } catch (Exception $e) {
+            error_log('Kommo API Create/Update Contact Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Create a new contact in Kommo from a WooCommerce customer
+     */
+    public function create_kommo_contact_from_customer($customer_id) {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+
+            // Get the WooCommerce customer
+            $customer = new WC_Customer($customer_id);
+            if (!$customer) {
+                throw new Exception('Customer not found.');
+            }
+
+            // Extract customer details
+            $customer_name = $customer->get_first_name() . ' ' . $customer->get_last_name();
+            $customer_email = $customer->get_email();
+            $customer_phone = $customer->get_billing_phone();
+            $customer_address = $customer->get_billing_address_1();
+            $customer_city = $customer->get_billing_city();
+            $customer_country = $customer->get_billing_country();
+
+            // Prepare the contact data
+            $contact_data = [
+                'name' => $customer_name,
+                'custom_fields_values' => [
+                    [
+                        'field_id' => 1841202, // Phone field ID
+                        'values' => [
+                            [
+                                'value' => $customer_phone                                
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 1841204, // Email field ID
+                        'values' => [
+                            [
+                                'value' => $customer_email
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 2075892, // Country field ID
+                        'values' => [
+                            [
+                                'value' => $customer_country,
+                            ],
+                        ],
+                    ],
+                    // Add more custom fields as needed
+                ],
+            ];
+
+            // Send the request to create the contact
+            $response = $this->client->request('POST', $this->base_url . '/api/v4/contacts', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+                'json' => [$contact_data], // Kommo API expects an array of contacts
+            ]);
+
+            $response_data = json_decode($response->getBody(), true);
+            error_log('Created Contact: ' . print_r($response_data, true));
+            return $response_data;
+        } catch (Exception $e) {
+            error_log('Kommo API Create Contact Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Update a contact in Kommo from a WooCommerce customer
+     */
+    public function update_kommo_contact_from_customer($customer_id) {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+
+            // Get the WooCommerce customer
+            $customer = new WC_Customer($customer_id);
+            if (!$customer) {
+                throw new Exception('Customer not found.');
+            }
+
+            // Extract customer details
+            $customer_name = $customer->get_first_name() . ' ' . $customer->get_last_name();
+            $customer_email = $customer->get_email();
+            $customer_phone = $customer->get_billing_phone();
+            $customer_address = $customer->get_billing_address_1();
+            $customer_city = $customer->get_billing_city();
+            $customer_country = $customer->get_billing_country();
+
+            // Prepare the contact data
+            $contact_data = [
+                'name' => $customer_name,
+                'custom_fields_values' => [
+                    [
+                        'field_id' => 1841202, // Phone field ID
+                        'values' => [
+                            [
+                                'value' => $customer_phone                                
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 1841204, // Email field ID
+                        'values' => [
+                            [
+                                'value' => $customer_email
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 2075892, // Country field ID
+                        'values' => [
+                            [
+                                'value' => $customer_country,
+                            ],
+                        ],
+                    ],
+                    // Add more custom fields as needed
+                ],
+            ];
+
+            // Send the request to update the contact
+            $response = $this->client->request('PATCH', $this->base_url . '/api/v4/contacts', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+                'json' => [$contact_data], // Kommo API expects an array of contacts
+            ]);
+
+            $response_data = json_decode($response->getBody(), true);
+            error_log('Updated Contact: ' . print_r($response_data, true));
+            return $response_data;
+        } catch (Exception $e) {
+            error_log('Kommo API Update Contact Error: ' . $e->getMessage());
             return false;
         }
     }
