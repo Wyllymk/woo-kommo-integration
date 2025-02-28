@@ -88,24 +88,78 @@ class WooKommoAdmin {
     /**
      * Render settings page
      */
-    public function render_settings_page() {
-        if (!current_user_can('manage_options')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'woo-kommo'));
-        }
-        ?>
+/**
+ * Render settings page
+ */
+public function render_settings_page() {
+    if (!current_user_can('manage_options')) {
+        wp_die(__('You do not have sufficient permissions to access this page.', 'woo-kommo'));
+    }
+    ?>
 <div class="wrap">
     <h1><?php _e('Kommo Integration Settings', 'woo-kommo'); ?></h1>
+
+    <!-- Instructions Section -->
+    <div class="woo-kommo-instructions">
+        <h2><?php _e('Instructions', 'woo-kommo'); ?></h2>
+        <p><?php _e('To integrate WooCommerce with Kommo, follow these steps:', 'woo-kommo'); ?></p>
+        <ol>
+            <li>
+                <strong><?php _e('Obtain API Credentials:', 'woo-kommo'); ?></strong>
+                <ul>
+                    <li><?php _e('Log in to your Kommo account.', 'woo-kommo'); ?></li>
+                    <li><?php _e('Navigate to the API settings section.', 'woo-kommo'); ?></li>
+                    <li><?php _e('Create a new API application and note down the <strong>Client ID</strong>, <strong>Client Secret</strong>, and <strong>Redirect URI</strong>.', 'woo-kommo'); ?>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <strong><?php _e('Enter API Credentials:', 'woo-kommo'); ?></strong>
+                <ul>
+                    <li><?php _e('Fill in the <strong>Subdomain</strong> (e.g., "yourcompany" if your Kommo URL is "yourcompany.kommo.com").', 'woo-kommo'); ?>
+                    </li>
+                    <li><?php _e('Enter the <strong>Client ID</strong> and <strong>Client Secret</strong> obtained from Kommo.', 'woo-kommo'); ?>
+                    </li>
+                    <li><?php _e('Set the <strong>Redirect URI</strong> to:', 'woo-kommo'); ?>
+                        <code><?php echo admin_url('admin.php?page=woo-kommo-settings'); ?></code>
+                    </li>
+                    <li><?php _e('Click "Save Changes" to store your settings.', 'woo-kommo'); ?></li>
+                </ul>
+            </li>
+            <li>
+                <strong><?php _e('Authorize the Application:', 'woo-kommo'); ?></strong>
+                <ul>
+                    <li><?php _e('After saving the settings, click the "Authorize" button to connect your WooCommerce store with Kommo.', 'woo-kommo'); ?>
+                    </li>
+                    <li><?php _e('You will be redirected to Kommo to grant permissions. Once authorized, you will receive an <strong>Auth Code</strong>.', 'woo-kommo'); ?>
+                    </li>
+                    <li><?php _e('Enter the <strong>Auth Code</strong> in the field below and save the settings again.', 'woo-kommo'); ?>
+                    </li>
+                </ul>
+            </li>
+        </ol>
+        <p><?php _e('Once the integration is complete, the following data will be sent to Kommo:', 'woo-kommo'); ?></p>
+        <ul>
+            <li>
+                <?php _e('Customer contact information (contact_id, names (firstname + lastname), email, phone, country).', 'woo-kommo'); ?>
+            </li>
+            <!-- <li><?php _e('Order details (order ID, products purchased, total amount).', 'woo-kommo'); ?></li> -->
+            <!-- <li><?php _e('Custom notes or tags associated with the order.', 'woo-kommo'); ?></li> -->
+        </ul>
+    </div>
+
+    <!-- Settings Form -->
     <form method="post" action="options.php">
         <?php
-                settings_fields('woo_kommo_settings');
-                do_settings_sections('woo_kommo_settings');
-                $this->render_settings_fields();
-                submit_button();
-                ?>
+            settings_fields('woo_kommo_settings');
+            do_settings_sections('woo_kommo_settings');
+            $this->render_settings_fields();
+            submit_button();
+            ?>
     </form>
 </div>
 <?php
-    }
+}
 
     /**
      * Render settings fields
