@@ -66,9 +66,12 @@ class WooKommoAPI {
         $this->client = new \GuzzleHttp\Client();
 
         add_action('admin_init', [$this, 'get_access_token']);
+        // add_action('init', [$this, 'retrieve_all_fields']);
+        // add_action('init', [$this, 'retrieve_lead_fields']);        
         add_action('woocommerce_created_customer', [$this, 'handle_new_customer']);
         add_action('woocommerce_save_account_details', [$this, 'handle_customer_update']);
         add_action('woocommerce_checkout_order_processed', [$this, 'handle_new_order'], 10, 3);
+        add_action('woocommerce_order_status_changed', [$this, 'update_lead_on_order_status_change'], 10, 3);
     }
 
     /**
@@ -77,8 +80,6 @@ class WooKommoAPI {
     public function get_access_token() {
         $stored_token = get_option('woo_kommo_access_token');
         $token_expires = get_option('woo_kommo_token_expires');
-
-        error_log('Stored Token: ' . $stored_token);
 
         // Return stored token if it's still valid
         if ($stored_token && !$this->is_token_expired($token_expires)) {
@@ -260,14 +261,14 @@ class WooKommoAPI {
      * Handle new WooCommerce order
      */
     public function handle_new_order($order_id, $posted_data, $order) {
-        error_log('Kommo Integration: New order processed');
         try {
-            // Initialize the API
-            $api = WooKommoAPI::get_instance();
-            $api->init();
-
-            // Create or update a contact in Kommo from the order
-            $api->create_kommo_contact_from_order($order_id);
+            // Create/update contact and get response
+            $contact_response = $this->create_kommo_contact_from_order($order_id);
+            
+            if ($contact_response && isset($contact_response['_embedded']['contacts'][0]['id'])) {
+                $contact_id = $contact_response['_embedded']['contacts'][0]['id'];
+                $this->create_lead_from_order($order_id, $contact_id);
+            }
         } catch (Exception $e) {
             error_log('Kommo Integration Error: ' . $e->getMessage());
         }
@@ -277,14 +278,9 @@ class WooKommoAPI {
      * Handle new customer account creation
      */
     public function handle_new_customer($customer_id) {
-        error_log('Kommo Integration: New customer account created');
         try {
-            // Initialize the API
-            $api = WooKommoAPI::get_instance();
-            $api->init();
-
             // Create or update a contact in Kommo from the customer data
-            $api->create_or_update_kommo_contact_from_customer($customer_id);
+           create_or_update_kommo_contact_from_customer($customer_id);
         } catch (Exception $e) {
             error_log('Kommo Integration Error: ' . $e->getMessage());
         }
@@ -294,14 +290,8 @@ class WooKommoAPI {
      * Handle customer account update
      */
     public function handle_customer_update($customer_id) {
-        error_log('Kommo Integration: Customer account updated');
         try {
-            // Initialize the API
-            $api = WooKommoAPI::get_instance();
-            $api->init();
-
-            // Create or update a contact in Kommo from the customer data
-            $api->create_or_update_kommo_contact_from_customer($customer_id);
+            create_or_update_kommo_contact_from_customer($customer_id);
         } catch (Exception $e) {
             error_log('Kommo Integration Error: ' . $e->getMessage());
         }
@@ -341,7 +331,7 @@ class WooKommoAPI {
     /**
      * Create or update a contact in Kommo from a WooCommerce order
      */
-    public function create_kommo_contact_from_order($order_id) {
+    private function create_kommo_contact_from_order($order_id) {
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -425,6 +415,14 @@ class WooKommoAPI {
                         'values' => [
                             [
                                 'value' => $customer_country,
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 2098967, // City field ID
+                        'values' => [
+                            [
+                                'value' => $customer_city,
                             ],
                         ],
                     ],
@@ -513,6 +511,14 @@ class WooKommoAPI {
                         'values' => [
                             [
                                 'value' => $customer_country,
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 2098967, // City field ID
+                        'values' => [
+                            [
+                                'value' => $customer_city,
                             ],
                         ],
                     ],
@@ -633,6 +639,14 @@ class WooKommoAPI {
                             ],
                         ],
                     ],
+                    [
+                        'field_id' => 2098967, // City field ID
+                        'values' => [
+                            [
+                                'value' => $customer_city,
+                            ],
+                        ],
+                    ],
                     // Add more custom fields as needed
                 ],
             ];
@@ -709,6 +723,14 @@ class WooKommoAPI {
                             ],
                         ],
                     ],
+                    [
+                        'field_id' => 2098967, // City field ID
+                        'values' => [
+                            [
+                                'value' => $customer_city,
+                            ],
+                        ],
+                    ],
                     // Add more custom fields as needed
                 ],
             ];
@@ -728,6 +750,286 @@ class WooKommoAPI {
             return $response_data;
         } catch (Exception $e) {
             error_log('Kommo API Update Contact Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    // LEADS SECTION
+
+    /**
+     * Retrieve all lead fields from Kommo API
+     */
+    public function retrieve_lead_fields() {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                error_log('No Access Token!');
+            }
+
+            $response = $this->client->request('GET', $this->base_url . '/api/v4/leads/custom_fields', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                ],
+            ]);
+
+            $fields = json_decode($response->getBody(), true);
+            error_log('Retrieved Lead Fields: ' . print_r($fields, true));
+            return $fields;
+        } catch (Exception $e) {
+            error_log('Kommo API Retrieve Lead Fields Error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Retrieve all leads from Kommo API
+     */
+    public function retrieve_all_leads() {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                error_log('No Access Token!');
+            }
+
+            $response = $this->client->request('GET', $this->base_url . '/api/v4/leads', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                ],
+            ]);
+
+            $leads = json_decode($response->getBody(), true);
+            error_log('Retrieved Leads: ' . print_r($leads, true));
+            return $leads;
+        } catch (Exception $e) {
+            error_log('Kommo API Retrieve Leads Error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+
+    /**
+     * Create a lead from WooCommerce order
+     */
+    public function create_lead_from_order($order_id, $contact_id) {
+        try {
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+    
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                throw new Exception('Order not found.');
+            }
+    
+            // Get order data           
+            $order_timestamp = $order->get_date_created() ? $order->get_date_created()->getTimestamp() : time();
+
+            // Initialize variables to store variations
+            $step = '';
+            $account_size = '';
+            $trading_platform = '';
+
+            // Get the first (and only) item in the order
+            $items = $order->get_items();
+            if (!empty($items)) {
+                $item = reset($items); // Get the first item
+                $product = $item->get_product();
+
+                // Get the variations (attributes) for the product
+                $variations = $product->get_attributes();
+
+                // Check if the product has variations
+                if (!empty($variations)) {
+                    // Convert variations to an array
+                    $variation_array = array_values($variations);
+
+                    // Map variations to their respective fields
+                    if (!empty($variation_array[0])) {
+                        $step = $variation_array[0]; // First variation → Steps
+                    }
+                    if (!empty($variation_array[1])) {
+                        $account_size = $variation_array[1]; // Second variation → Account size
+                    }
+                    if (!empty($variation_array[2])) {
+                        $trading_platform = $variation_array[2]; // Third variation → Trading platform
+                    }
+                }
+            }
+
+            $product_names = [];
+            foreach ($order->get_items() as $item) {
+                $product_names[] = $item->get_name();
+            }
+            $payment_method = $order->get_payment_method_title(); // Payment gateway title
+            $coupons = $order->get_coupon_codes();
+            $total = $order->get_total();
+            $discount = $order->get_total_discount();
+            $order_status = $order->get_status();
+    
+            // Prepare the lead data with all available fields
+            $lead_data = [
+                'name' => 'Order #' . $order_id,
+                'pipeline_id' => 8286739,
+                '_embedded' => [
+                    'contacts' => [
+                        ['id' => $contact_id]
+                    ]
+                ],
+                'custom_fields_values' => [
+                    // Date of purchase (1973834) - date field
+                    [
+                        'field_id' => 1973834,
+                        'values' => [['value' => $order_timestamp]]
+                    ],
+                    // NEW Date of purchase (2099105) - date_time field
+                    [
+                        'field_id' => 2099105,
+                        'values' => [['value' => $order_timestamp]]
+                    ],
+                    // NEW TOTAL AMOUNT (2098971) - monetary field
+                    [
+                        'field_id' => 2098971,
+                        'values' => [['value' => $total]]
+                    ],         
+                    // Payment method (use Challenge field 2085492)
+                    [
+                        'field_id' => 2085492,
+                        'values' => [['value' => implode(", ", $product_names)]]
+                    ],
+                    // Coupons (2086584)
+                    [
+                        'field_id' => 2086584,
+                        'values' => [['value' => implode(", ", $coupons)]]
+                    ],
+                    // Total amount (2083352)
+                    [
+                        'field_id' => 2083352,
+                        'values' => [['value' => $total]]
+                    ],
+                    // Discount (2083350)
+                    [
+                        'field_id' => 2083350,
+                        'values' => [['value' => $discount]]
+                    ],
+                    // Order status (2099073)
+                    [
+                        'field_id' => 2099073,
+                        'values' => [['value' => $order_status]]
+                    ],
+                    // Description (2086632) - Include payment gateway
+                    [
+                        'field_id' => 2086632,
+                        'values' => [['value' => $payment_method]]
+                    ],
+                    // Steps (2099107) - First variation
+                    [
+                        'field_id' => 2099107,
+                        'values' => [['value' => $step]]
+                    ],
+                    // Account size (2099109) - Second variation
+                    [
+                        'field_id' => 2099109,
+                        'values' => [['value' => $account_size]]
+                    ],
+                    // Trading platform (2099111) - Third variation
+                    [
+                        'field_id' => 2099111,
+                        'values' => [['value' => $trading_platform]]
+                    ],
+                ]
+            ];
+    
+            // Log the data being sent
+            error_log('Lead Data Being Sent: ' . print_r($lead_data, true));
+    
+            $response = $this->client->request('POST', $this->base_url . '/api/v4/leads', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+                'json' => [$lead_data]
+            ]);
+    
+            $response_data = json_decode($response->getBody(), true);
+            if (!empty($response_data['_embedded']['leads'][0]['id'])) {
+                $lead_id = $response_data['_embedded']['leads'][0]['id'];
+                update_post_meta($order_id, 'woo_kommo_lead_id', $lead_id);
+            }
+    
+            error_log('Created Lead: ' . print_r($response_data, true));
+            return $response_data;
+        } catch (Exception $e) {
+            error_log('Kommo API Create Lead Error: ' . print_r($e->getMessage(), true));
+            return false;
+        }
+    }
+
+
+    /**
+     * Update lead when order status changes
+     */
+    public function update_lead_on_order_status_change($order_id, $old_status, $new_status) {
+        try {
+            // Get the lead ID from post meta
+            $lead_id = get_post_meta($order_id, 'woo_kommo_lead_id', true);
+    
+            // Log the lead ID for debugging
+            error_log('Lead ID being used: ' . print_r($lead_id, true));
+    
+            // Check if the lead ID is valid
+            if (!$lead_id) {
+                throw new Exception('No lead ID found for order #' . $order_id);
+            }
+    
+            // Cast the lead ID to an integer
+            $lead_id = (int) $lead_id;
+    
+            // Get the access token
+            $access_token = $this->get_access_token();
+            if (!$access_token) {
+                throw new Exception('No access token available.');
+            }
+    
+            // Prepare the lead data
+            $lead_data = [
+                'id' => $lead_id, // Ensure this is a valid integer
+                'custom_fields_values' => [
+                    [
+                        'field_id' => 2099073, // WC Status field
+                        'values' => [['value' => $new_status]]
+                    ]
+                ]
+            ];
+    
+            // Log the data being sent
+            error_log('Lead Data Being Sent: ' . print_r($lead_data, true));
+    
+            // Send the PATCH request
+            $response = $this->client->request('PATCH', $this->base_url . '/api/v4/leads', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $access_token,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+                'json' => [$lead_data]
+            ]);
+    
+            // Log the response
+            $response_data = json_decode($response->getBody(), true);
+            error_log('Updated Lead Response: ' . print_r($response_data, true));
+    
+            return $response_data;
+        } catch (Exception $e) {
+            // Log the full error message
+            error_log('Kommo API Update Lead Status Error: ' . print_r($e->getMessage(), true));
+    
+            // Optionally log to a file
+            file_put_contents(__DIR__ . '/kommo_error.log', 'Kommo API Update Lead Status Error: ' . print_r($e, true) . PHP_EOL, FILE_APPEND);
+    
             return false;
         }
     }
