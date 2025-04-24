@@ -169,7 +169,7 @@ public function render_settings_page() {
             'woo_kommo_subdomain' => [
                 'label' => __('Subdomain', 'woo-kommo'),
                 'type'  => 'text',
-            ],
+            ],            
             'woo_kommo_client_id' => [
                 'label' => __('Client ID', 'woo-kommo'),
                 'type'  => 'text',

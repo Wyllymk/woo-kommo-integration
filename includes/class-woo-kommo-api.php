@@ -28,10 +28,11 @@ class WooKommoAPI {
      */
     private $subdomain;
 
-    /**
+     /**
      * Client ID for Kommo API
      */
     private $client_id;
+
 
     /**
      * Client secret for Kommo API
@@ -58,6 +59,7 @@ class WooKommoAPI {
      */
     public function init() {
         $this->subdomain = get_option('woo_kommo_subdomain');
+        $this->client = get_option('woo_kommo_client');
         $this->client_id = get_option('woo_kommo_client_id');
         $this->client_secret = get_option('woo_kommo_client_secret');
         $this->redirect_uri = get_option('woo_kommo_redirect_uri');
@@ -814,6 +816,13 @@ class WooKommoAPI {
      */
     public function create_lead_from_order($order_id, $contact_id) {
         try {
+            // First check if we already created a lead for this order
+            $existing_lead_id = get_post_meta($order_id, 'woo_kommo_lead_id', true);
+            if ($existing_lead_id) {
+                error_log("Lead already exists for order {$order_id} with Kommo ID {$existing_lead_id}");
+                return false;
+            }
+        
             $access_token = $this->get_access_token();
             if (!$access_token) {
                 throw new Exception('No access token available.');
@@ -872,7 +881,7 @@ class WooKommoAPI {
             // Prepare the lead data with all available fields
             $lead_data = [
                 'name' => 'Order #' . $order_id,
-                'pipeline_id' => 8286739,
+                'pipeline_id' => 9564319,
                 '_embedded' => [
                     'contacts' => [
                         ['id' => $contact_id]
