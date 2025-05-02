@@ -80,11 +80,13 @@ class WooKommoAPI {
      * Get access token
      */
     public function get_access_token() {
+        
         $stored_token = get_option('woo_kommo_access_token');
         $token_expires = get_option('woo_kommo_token_expires');
-
+       
         // Return stored token if it's still valid
         if ($stored_token && !$this->is_token_expired($token_expires)) {
+            error_log('Kommo API Access Token: ' . $stored_token);
             return $stored_token;
         }
 
@@ -102,6 +104,7 @@ class WooKommoAPI {
                 $this->clear_tokens();
             }
         }
+        
 
         // If no refresh token is available or refresh fails, attempt reauthorization
         $authorization_code = get_option('woo_kommo_auth_code');
@@ -331,9 +334,11 @@ class WooKommoAPI {
     }
 
     /**
-     * Create or update a contact in Kommo from a WooCommerce order
+     * Create or update a contact in Kommo from a WooCommerce order with affiliate/referral information
      */
     private function create_kommo_contact_from_order($order_id) {
+        error_log('Creating Kommo contact from order ID: ' . $order_id);
+        global $order, $post;
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -348,26 +353,100 @@ class WooKommoAPI {
 
             // Extract customer details
             $customer_email = $order->get_billing_email();
+            $customer_id = $order->get_customer_id();
+
+            // Get affiliate information
+            $affiliate_data = $this->get_affiliate_info_for_kommo($order_id);
 
             // Check if a contact with the same email already exists
             $existing_contact = $this->get_contact_by_email($customer_email);
+            
             if ($existing_contact) {
-                // Update the existing contact
-                return $this->update_kommo_contact_from_order($order_id, $existing_contact['id']);
+                // Update the existing contact with affiliate info
+                return $this->update_kommo_contact_from_order($order_id, $existing_contact['id'], $affiliate_data);
             } else {
-                // Create a new contact
-                return $this->create_new_kommo_contact_from_order($order_id);
+                // Create a new contact with affiliate info
+                return $this->create_new_kommo_contact_from_order($order_id, $affiliate_data);
             }
         } catch (Exception $e) {
             error_log('Kommo API Create/Update Contact Error: ' . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Get affiliate information for KOMMO integration
+     */
+    private function get_affiliate_info_for_kommo($order_id) {
+        global $wpdb;
+    
+        $affiliate_data = [
+            'ib_code' => '0',       // Customer's affiliate ID (referral_id from wp_affiliate_wp_referrals, 0 if not found)
+            'affiliate_of' => '0'   // Payment email of the referrer (from wp_affiliate_wp_affiliates, 0 if not found)
+        ];
+    
+        // Validate inputs
+        if (empty($order_id) || !is_numeric($order_id)) {
+            return $affiliate_data;
+        }
+    
+        // Query wp_affiliate_wp_referrals to get referral_id and affiliate_id
+        $referrals_table = $wpdb->prefix . 'affiliate_wp_referrals';
+        $query = $wpdb->prepare(
+            "SELECT referral_id, affiliate_id 
+             FROM $referrals_table 
+             WHERE reference = %s 
+             LIMIT 1",
+            $order_id
+        );
+    
+        $referral_data = $wpdb->get_row($query);
+    
+        // If no referral data found, return default affiliate data with 0s
+        if (!$referral_data) {
+            return $affiliate_data;
+        }
+    
+        // Set ib_code to referral_id if found
+        if (!empty($referral_data->referral_id)) {
+            $affiliate_data['ib_code'] = $referral_data->referral_id;
+            error_log('IB CODE:'. $affiliate_data['ib_code']);
+        }        
+    
+        // Get affiliate_id for the referrer
+        $affiliate_id = $referral_data->affiliate_id;
+        error_log('Affiliate ID: ' . $affiliate_id);
+        
+        if ($affiliate_id && is_numeric($affiliate_id)) {
+            // Query wp_affiliate_wp_affiliates to get payment_email
+            $affiliates_table = $wpdb->prefix . 'affiliate_wp_affiliates';
+            $affiliate_query = $wpdb->prepare(
+                "SELECT payment_email 
+                 FROM $affiliates_table 
+                 WHERE affiliate_id = %d 
+                 LIMIT 1",
+                $affiliate_id
+            );
+    
+            $payment_email = $wpdb->get_var($affiliate_query);
+
+            error_log('Payment Email: ' . $payment_email);
+    
+            // Set affiliate_of to payment_email if found, otherwise keep as 0
+            if (!empty($payment_email)) {
+                $affiliate_data['affiliate_of'] = $payment_email;
+            }
+        }
+    
+        return $affiliate_data;
     }
 
     /**
      * Create a new contact in Kommo from a WooCommerce order
      */
-    private function create_new_kommo_contact_from_order($order_id) {
+    private function create_new_kommo_contact_from_order($order_id, $affiliate_data = []) {
+        error_log('Creating new Kommo contact from order ID: ' . $order_id);
+        error_log('Affiliate Data: ' . print_r($affiliate_data, true));
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -440,6 +519,25 @@ class WooKommoAPI {
                 ],
             ];
 
+
+            // Add affiliate fields if data exists
+            if (!empty($affiliate_data['ib_code'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2083336, // Replace with actual field ID
+                    'values' => [['value' => $affiliate_data['ib_code']]]
+                ];
+            }
+
+            if (!empty($affiliate_data['affiliate_of'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2102113, // Replace with actual field ID
+                    'values' => [['value' => $affiliate_data['affiliate_of']]]
+                ];
+            }
+
+            // Log the data being sent
+            error_log('Contact Data Being Sent: ' . print_r($contact_data, true));
+
             // Send the request to create the contact
             $response = $this->client->request('POST', $this->base_url . '/api/v4/contacts', [
                 'headers' => [
@@ -450,8 +548,10 @@ class WooKommoAPI {
                 'json' => [$contact_data], // Kommo API expects an array of contacts
             ]);
 
+
             $response_data = json_decode($response->getBody(), true);
-            error_log('Created Contact: ' . print_r($response_data, true));
+            
+            error_log('Created Contact:: ' . print_r($response_data, true));
             return $response_data;
         } catch (Exception $e) {
             error_log('Kommo API Create Contact Error: ' . $e->getMessage());
@@ -460,9 +560,13 @@ class WooKommoAPI {
     }
 
     /**
-     * Update an existing contact in Kommo from a WooCommerce order
+     * Update an existing contact in Kommo from a WooCommerce order with affiliate info
      */
-    private function update_kommo_contact_from_order($order_id, $contact_id) {
+    private function update_kommo_contact_from_order($order_id, $contact_id, $affiliate_data = []) {
+        error_log('Updating Kommo contact from order ID: ' . $order_id);
+        error_log('Contact ID: ' . $contact_id);
+        error_log('Affiliate Data: ' . print_r($affiliate_data, true));
+
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -532,9 +636,28 @@ class WooKommoAPI {
                             ],
                         ],
                     ],
+                    [
+                        'field_id' => 2083336, // IB CODE ID
+                        'values' => [
+                            [
+                                'value' => $affiliate_data['ib_code'], // Use the order creation date
+                            ],
+                        ],
+                    ],
+                    [
+                        'field_id' => 2102113, // AFFILIATE OF ID
+                        'values' => [
+                            [
+                                'value' => $affiliate_data['affiliate_of'], // Use the order creation date
+                            ],
+                        ],
+                    ],
                     // Add more custom fields as needed
                 ],
-            ];
+            ];          
+
+            // Log the data being sent
+            error_log('Contact Data Being Sent: ' . print_r($contact_data, true));
 
             // Send the request to update the contact
             $response = $this->client->request('PATCH', $this->base_url . '/api/v4/contacts', [
@@ -543,22 +666,23 @@ class WooKommoAPI {
                     'accept' => 'application/json',
                     'content-type' => 'application/json',
                 ],
-                'json' => [$contact_data], // Kommo API expects an array of contacts
+                'json' => [$contact_data],
             ]);
 
             $response_data = json_decode($response->getBody(), true);
-            error_log('Updated Contact: ' . print_r($response_data, true));
+            error_log('Updated Contact from Order: ' . print_r($response_data, true));
             return $response_data;
         } catch (Exception $e) {
-            error_log('Kommo API Update Contact Error: ' . $e->getMessage());
+            error_log('Kommo API Update Contact from Order Error: ' . $e->getMessage());
             return false;
         }
     }
 
     /**
-     * Create or update a contact in Kommo from a WooCommerce customer
+     * Create or update a contact in Kommo from a WooCommerce customer with affiliate info
      */
     public function create_or_update_kommo_contact_from_customer($customer_id) {
+        error_log('Creating or updating Kommo contact from customer ID: ' . $customer_id);
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -573,26 +697,30 @@ class WooKommoAPI {
 
             // Extract customer details
             $customer_email = $customer->get_email();
+
+            // Get affiliate information
+            $affiliate_data = $this->get_affiliate_info_for_kommo($order_id);
 
             // Check if a contact with the same email already exists
             $existing_contact = $this->get_contact_by_email($customer_email);
             if ($existing_contact) {
-                // Update the existing contact
-                return $this->update_kommo_contact_from_customer($customer_id, $existing_contact['id']);
+                // Update the existing contact with affiliate info
+                return $this->update_kommo_contact_from_customer($customer_id, $existing_contact['id'], $affiliate_data);
             } else {
-                // Create a new contact
-                return $this->create_kommo_contact_from_customer($customer_id);
+                // Create a new contact with affiliate info
+                return $this->create_kommo_contact_from_customer($customer_id, $affiliate_data);
             }
         } catch (Exception $e) {
-            error_log('Kommo API Create/Update Contact Error: ' . $e->getMessage());
+            error_log('Kommo API Create/Update Contact from Customer Error: ' . $e->getMessage());
             return false;
         }
     }
 
     /**
-     * Create a new contact in Kommo from a WooCommerce customer
+     * Create a new contact in Kommo from a WooCommerce customer with affiliate info
      */
-    public function create_kommo_contact_from_customer($customer_id) {
+    public function create_kommo_contact_from_customer($customer_id, $affiliate_data = []) {
+        error_log('Creating contact from customer ID: ' . $customer_id);
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -619,39 +747,37 @@ class WooKommoAPI {
                 'custom_fields_values' => [
                     [
                         'field_id' => 1841202, // Phone field ID
-                        'values' => [
-                            [
-                                'value' => $customer_phone                                
-                            ],
-                        ],
+                        'values' => [['value' => $customer_phone]],
                     ],
                     [
                         'field_id' => 1841204, // Email field ID
-                        'values' => [
-                            [
-                                'value' => $customer_email
-                            ],
-                        ],
+                        'values' => [['value' => $customer_email]],
                     ],
                     [
                         'field_id' => 2075892, // Country field ID
-                        'values' => [
-                            [
-                                'value' => $customer_country,
-                            ],
-                        ],
+                        'values' => [['value' => $customer_country]],
                     ],
                     [
                         'field_id' => 2098967, // City field ID
-                        'values' => [
-                            [
-                                'value' => $customer_city,
-                            ],
-                        ],
+                        'values' => [['value' => $customer_city]],
                     ],
-                    // Add more custom fields as needed
                 ],
             ];
+
+            // Add affiliate fields if data exists
+            if (!empty($affiliate_data['ib_code'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2083336,
+                    'values' => [['value' => $affiliate_data['ib_code']]]
+                ];
+            }
+
+            if (!empty($affiliate_data['affiliate_of'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2102113,
+                    'values' => [['value' => $affiliate_data['affiliate_of']]]
+                ];
+            }
 
             // Send the request to create the contact
             $response = $this->client->request('POST', $this->base_url . '/api/v4/contacts', [
@@ -660,8 +786,11 @@ class WooKommoAPI {
                     'accept' => 'application/json',
                     'content-type' => 'application/json',
                 ],
-                'json' => [$contact_data], // Kommo API expects an array of contacts
+                'json' => [$contact_data],
             ]);
+
+            // Log the data being sent
+            error_log('Contact Data Being Sent: ' . print_r($contact_data, true));
 
             $response_data = json_decode($response->getBody(), true);
             error_log('Created Contact: ' . print_r($response_data, true));
@@ -673,9 +802,10 @@ class WooKommoAPI {
     }
 
     /**
-     * Update an existing contact in Kommo from a WooCommerce customer
+     * Update an existing contact in Kommo from a WooCommerce customer with affiliate info
      */
-    public function update_kommo_contact_from_customer($customer_id, $contact_id) {
+    public function update_kommo_contact_from_customer($customer_id, $contact_id, $affiliate_data = []) {
+        error_log('Updating contact from customer ID: ' . $customer_id);
         try {
             $access_token = $this->get_access_token();
             if (!$access_token) {
@@ -698,44 +828,45 @@ class WooKommoAPI {
 
             // Prepare the contact data
             $contact_data = [
-                'id' => $contact_id, // Include the contact ID to update the existing contact
+                'id' => $contact_id,
                 'name' => $customer_name,
                 'custom_fields_values' => [
                     [
                         'field_id' => 1841202, // Phone field ID
-                        'values' => [
-                            [
-                                'value' => $customer_phone                                
-                            ],
-                        ],
+                        'values' => [['value' => $customer_phone]],
                     ],
                     [
                         'field_id' => 1841204, // Email field ID
-                        'values' => [
-                            [
-                                'value' => $customer_email
-                            ],
-                        ],
+                        'values' => [['value' => $customer_email]],
                     ],
                     [
                         'field_id' => 2075892, // Country field ID
-                        'values' => [
-                            [
-                                'value' => $customer_country,
-                            ],
-                        ],
+                        'values' => [['value' => $customer_country]],
                     ],
                     [
                         'field_id' => 2098967, // City field ID
-                        'values' => [
-                            [
-                                'value' => $customer_city,
-                            ],
-                        ],
+                        'values' => [['value' => $customer_city]],
                     ],
-                    // Add more custom fields as needed
                 ],
             ];
+
+            // Add affiliate fields if data exists
+            if (!empty($affiliate_data['ib_code'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2083336,
+                    'values' => [['value' => $affiliate_data['ib_code']]]
+                ];
+            }
+
+            if (!empty($affiliate_data['affiliate_of'])) {
+                $contact_data['custom_fields_values'][] = [
+                    'field_id' => 2102113,
+                    'values' => [['value' => $affiliate_data['affiliate_of']]]
+                ];
+            }
+
+            // Log the data being sent
+            error_log('Contact Data Being Sent: ' . print_r($contact_data, true));
 
             // Send the request to update the contact
             $response = $this->client->request('PATCH', $this->base_url . '/api/v4/contacts', [
@@ -744,7 +875,7 @@ class WooKommoAPI {
                     'accept' => 'application/json',
                     'content-type' => 'application/json',
                 ],
-                'json' => [$contact_data], // Kommo API expects an array of contacts
+                'json' => [$contact_data],
             ]);
 
             $response_data = json_decode($response->getBody(), true);
